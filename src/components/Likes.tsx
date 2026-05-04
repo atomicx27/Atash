@@ -1,9 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Heart, MessagesSquare, MapPin, User, ChevronRight, Star } from 'lucide-react';
-import { db, auth } from '../lib/firebase';
-import { collection, query, where, getDocs, setDoc, serverTimestamp, doc, getDoc, onSnapshot } from 'firebase/firestore';
-import { UserProfile } from '../App';
+import { supabase } from '../lib/supabase';
+import { UserProfile } from '../components/AppContainer';
 
 interface LikedProfile extends UserProfile {
   likeId: string;
@@ -16,57 +15,81 @@ export function Likes() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!auth.currentUser) return;
+    let active = true;
 
-    // Listen for likes received by the current user
-    const receivedQuery = query(
-      collection(db, 'likes'),
-      where('toId', '==', auth.currentUser.uid)
-    );
+    const fetchLikes = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
 
-    const unsubReceived = onSnapshot(receivedQuery, async (snapshot) => {
-      const likesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      const profiles = await Promise.all(
-        likesData.map(async (like: any) => {
-          const userDoc = await getDoc(doc(db, 'users', like.fromId));
-          return { ...userDoc.data(), likeId: like.id } as LikedProfile;
-        })
-      );
-      setReceivedLikes(profiles.filter(p => !!p.uid));
-    });
+      try {
+        const [receivedSnap, sentSnap] = await Promise.all([
+          supabase.from('likes').select('fromId').eq('toId', user.id),
+          supabase.from('likes').select('toId').eq('fromId', user.id)
+        ]);
 
-    // Listen for likes sent by the current user
-    const sentQuery = query(
-      collection(db, 'likes'),
-      where('fromId', '==', auth.currentUser.uid)
-    );
+        if (receivedSnap.error) console.error("Received likes error:", receivedSnap.error);
+        if (sentSnap.error) console.error("Sent likes error:", sentSnap.error);
 
-    const unsubSent = onSnapshot(sentQuery, async (snapshot) => {
-      const likesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      const profiles = await Promise.all(
-        likesData.map(async (like: any) => {
-          const userDoc = await getDoc(doc(db, 'users', like.toId));
-          return { ...userDoc.data(), likeId: like.id } as LikedProfile;
-        })
-      );
-      setSentLikes(profiles.filter(p => !!p.uid));
-      setLoading(false);
-    });
+        const receivedLikesData = receivedSnap.data || [];
+        const sentLikesData = sentSnap.data || [];
+
+        const receivedIds = receivedLikesData.map((l: any) => l.fromId);
+        const sentIds = sentLikesData.map((l: any) => l.toId);
+
+        const allIds = Array.from(new Set([...receivedIds, ...sentIds]));
+        
+        if (allIds.length > 0) {
+          const { data: usersData, error: usersError } = await supabase.from('users').select('*').in('id', allIds);
+          if (usersError) console.error("Users fetch error in Likes:", usersError);
+          
+          const usersMap = new Map((usersData || []).map((u: any) => [u.id, u]));
+
+          const received = receivedLikesData.map((like: any) => {
+            const u = usersMap.get(like.fromId);
+            return u ? { ...u, likeId: `${like.fromId}-${user.id}` } : null;
+          }).filter(Boolean);
+
+          const sent = sentLikesData.map((like: any) => {
+            const u = usersMap.get(like.toId);
+            return u ? { ...u, likeId: `${user.id}-${like.toId}` } : null;
+          }).filter(Boolean);
+
+          if (active) {
+            setReceivedLikes(received as LikedProfile[]);
+            setSentLikes(sent as LikedProfile[]);
+          }
+        } else if (active) {
+          setReceivedLikes([]);
+          setSentLikes([]);
+        }
+      } catch (error) {
+        console.error("Error fetching likes:", error);
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+
+    fetchLikes();
+
+    const channel = supabase.channel('likes_updates')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'likes' }, () => {
+         fetchLikes();
+      })
+      .subscribe();
 
     return () => {
-      unsubReceived();
-      unsubSent();
+      active = false;
+      supabase.removeChannel(channel);
     };
   }, []);
 
   const handleLikeBack = async (targetUserId: string) => {
-    if (!auth.currentUser) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
     try {
-      const likeId = `${auth.currentUser.uid}_${targetUserId}`;
-      await setDoc(doc(db, 'likes', likeId), {
-        fromId: auth.currentUser.uid,
-        toId: targetUserId,
-        createdAt: serverTimestamp()
+      await supabase.from('likes').upsert({
+        fromId: user.id,
+        toId: targetUserId
       });
       alert("It's a Match! You can now message them.");
     } catch (error) {
@@ -75,7 +98,7 @@ export function Likes() {
   };
 
   const matches = sentLikes.filter(sent => 
-    receivedLikes.some(received => received.uid === sent.uid)
+    receivedLikes.some(received => (received.id || received.uid) === (sent.id || sent.uid))
   );
 
   return (
@@ -115,11 +138,11 @@ export function Likes() {
               className="grid grid-cols-2 gap-4"
             >
               {(activeTab === 'received' ? receivedLikes : sentLikes).map((profile) => {
-                const isMatch = matches.some(m => m.uid === profile.uid);
+                const isMatch = matches.some(m => (m.id || m.uid) === (profile.id || profile.uid));
                 
                 return (
                   <motion.div
-                    key={profile.uid}
+                    key={profile.id || profile.uid}
                     layout
                     className="bg-white rounded-3xl overflow-hidden shadow-sm border border-neutral-100 flex flex-col group"
                   >
@@ -147,7 +170,7 @@ export function Likes() {
                     <div className="p-3">
                       {activeTab === 'received' && !isMatch ? (
                         <button 
-                          onClick={() => handleLikeBack(profile.uid)}
+                          onClick={() => handleLikeBack(profile.id || profile.uid)}
                           className="w-full py-2 bg-maroon-900 text-white rounded-xl text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 active:scale-95 transition-all shadow-md shadow-maroon-900/10"
                         >
                           <Heart className="w-3 h-3 fill-current" />

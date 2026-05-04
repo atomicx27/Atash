@@ -16,8 +16,9 @@ export function ProfileSetup({ onComplete }: ProfileSetupProps) {
     temple: '', languages: [] as string[],
     navjote: null as boolean | null,
     diet: '', familyKnows: false,
-    photo: '', gender: '', lookingFor: '', interests: [] as string[]
+    photo: '', photoFile: null as File | null, gender: '', lookingFor: '', interests: [] as string[]
   });
+  const [error, setError] = useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   const PROMPT_OPTIONS = [
@@ -34,7 +35,8 @@ export function ProfileSetup({ onComplete }: ProfileSetupProps) {
     const file = e.target.files?.[0];
     if (file) {
       const url = URL.createObjectURL(file);
-      setFormData(prev => ({ ...prev, photo: url }));
+      setFormData(prev => ({ ...prev, photo: url, photoFile: file }));
+      setError(null);
     }
   };
 
@@ -47,7 +49,10 @@ export function ProfileSetup({ onComplete }: ProfileSetupProps) {
     }));
   };
 
-  const update = (field: string, val: any) => setFormData(prev => ({ ...prev, [field]: val }));
+  const update = (field: string, val: any) => {
+    setFormData(prev => ({ ...prev, [field]: val }));
+    setError(null);
+  };
 
   const updatePrompt = (question: string, answer: string) => {
     setFormData(prev => ({
@@ -65,10 +70,25 @@ export function ProfileSetup({ onComplete }: ProfileSetupProps) {
   };
 
   const nextStep = () => {
-    if (step === 1 && !formData.photo) {
-      alert("A profile picture is compulsory to join the community.");
-      return;
+    if (step === 1) {
+      if (!formData.photo) {
+        setError("A profile picture is compulsory to join the community.");
+        return;
+      }
+      if (!formData.name.trim()) {
+        setError("Please enter your name.");
+        return;
+      }
+      if (!formData.age) {
+        setError("Please enter your age.");
+        return;
+      }
+      if (!formData.city) {
+        setError("Please select your city.");
+        return;
+      }
     }
+    setError(null);
     if (step < 8) setStep(step + 1);
     else onComplete(formData);
   };
@@ -103,21 +123,26 @@ export function ProfileSetup({ onComplete }: ProfileSetupProps) {
                   accept="image/*" 
                   className="hidden" 
                 />
-                <button 
-                  onClick={() => fileInputRef.current?.click()}
-                  className={`w-28 h-28 rounded-full flex flex-col items-center justify-center border-2 border-dashed overflow-hidden transition-all ${
-                    formData.photo ? 'border-amber-500 shadow-lg shadow-amber-500/20' : 'bg-neutral-100 text-neutral-400 border-neutral-300'
-                  }`}
-                >
-                  {formData.photo ? (
-                    <img src={formData.photo} alt="Preview" className="w-full h-full object-cover" />
-                  ) : (
-                    <>
-                      <Camera className="w-8 h-8 mb-1" />
-                      <span className="text-xs font-medium">Add Photo</span>
-                    </>
+                <div className="flex flex-col items-center gap-2">
+                  <button 
+                    onClick={() => fileInputRef.current?.click()}
+                    className={`w-28 h-28 rounded-full flex flex-col items-center justify-center border-2 border-dashed overflow-hidden transition-all ${
+                      formData.photo ? 'border-amber-500 shadow-lg shadow-amber-500/20' : 'bg-neutral-100 text-neutral-400 border-neutral-300'
+                    }`}
+                  >
+                    {formData.photo ? (
+                      <img src={formData.photo} alt="Preview" className="w-full h-full object-cover" />
+                    ) : (
+                      <>
+                        <Camera className="w-8 h-8 mb-1" />
+                        <span className="text-xs font-medium">Add Photo</span>
+                      </>
+                    )}
+                  </button>
+                  {error && !formData.photo && (
+                    <p className="text-[10px] text-red-500 font-bold uppercase tracking-wider text-center">Compulsory</p>
                   )}
-                </button>
+                </div>
               </div>
 
               <label className="block">
@@ -395,6 +420,11 @@ export function ProfileSetup({ onComplete }: ProfileSetupProps) {
         </AnimatePresence>
       </div>
 
+      {error && (
+        <div className="mb-4 p-3 bg-red-50 border border-red-100 rounded-xl">
+          <p className="text-xs text-red-600 text-center font-medium">{error}</p>
+        </div>
+      )}
       <div className="mt-4 pb-2 z-10 bg-ivory">
         <button
           onClick={nextStep}

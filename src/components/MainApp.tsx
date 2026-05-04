@@ -7,8 +7,7 @@ import { ProfileSettings } from './ProfileSettings';
 import { Likes } from './Likes';
 import { Matches } from './Matches';
 import { UserProfile } from '../App';
-import { db, auth } from '../lib/firebase';
-import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { supabase } from '../lib/supabase';
 
 export type TabState = 'discover' | 'likes' | 'matches' | 'events' | 'profile';
 
@@ -29,16 +28,33 @@ export function MainApp({
   const [hasUnread, setHasUnread] = useState(false);
 
   useEffect(() => {
-    if (!auth.currentUser) return;
-    const q = query(
-      collection(db, 'messages'),
-      where('receiverId', '==', auth.currentUser.uid),
-      where('read', '==', false)
-    );
-    const unsub = onSnapshot(q, (snap) => {
-      setHasUnread(!snap.empty);
-    });
-    return () => unsub();
+    let active = true;
+    const fetchUnread = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user || !active) return;
+      const { data, error } = await supabase.from('messages')
+        .select('id')
+        .eq('receiverId', user.id)
+        .eq('read', false)
+        .limit(1);
+      
+      if (active && !error) {
+         setHasUnread(data && data.length > 0);
+      }
+    };
+
+    fetchUnread();
+    
+    const channel = supabase.channel('unread_messages')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, () => {
+        fetchUnread();
+      })
+      .subscribe();
+      
+    return () => {
+       active = false;
+       supabase.removeChannel(channel);
+    };
   }, []);
 
   return (

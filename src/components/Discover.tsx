@@ -2,9 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Heart, X as XIcon, MapPin, Briefcase, Compass, ChevronDown, Flame, Info, SlidersHorizontal, Loader2 } from 'lucide-react';
 import { QUESTIONS } from './Quiz';
-import { db, auth } from '../lib/firebase';
-import { collection, query, where, getDocs, setDoc, doc, serverTimestamp, limit } from 'firebase/firestore';
-import { UserProfile } from '../App';
+import { supabase } from '../lib/supabase';
+import { UserProfile } from '../components/AppContainer';
 
 interface DiscoverProps {
   currentUserAnswers?: Record<number, number>;
@@ -25,45 +24,31 @@ export function Discover({ currentUserAnswers = {}, currentUserPhoto, currentUse
   }, [filters]);
 
   const fetchProfiles = async () => {
-    if (!auth.currentUser) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
     setLoading(true);
     try {
-      // First, get all likes sent by the current user to exclude them
-      const likesSentQuery = query(
-        collection(db, 'likes'),
-        where('fromId', '==', auth.currentUser.uid)
-      );
-      const blocksSentQuery = query(
-        collection(db, 'blocks'),
-        where('blockerId', '==', auth.currentUser.uid)
-      );
-      const blocksReceivedQuery = query(
-        collection(db, 'blocks'),
-        where('blockedUserId', '==', auth.currentUser.uid)
-      );
-
-      const [likesSnapshot, blocksSentSnap, blocksRecSnap] = await Promise.all([
-        getDocs(likesSentQuery),
-        getDocs(blocksSentQuery),
-        getDocs(blocksReceivedQuery)
+      // Get likes and blocks
+      const [likesSentSnap, blocksSentSnap, blocksRecSnap] = await Promise.all([
+        supabase.from('likes').select('toId').eq('fromId', user.id),
+        supabase.from('blocks').select('blockedUserId').eq('blockerId', user.id),
+        supabase.from('blocks').select('blockerId').eq('blockedUserId', user.id)
       ]);
 
-      const likedUserIds = likesSnapshot.docs.map(doc => doc.data().toId);
+      const likedUserIds = (likesSentSnap.data || []).map(d => d.toId);
       const blockedUserIds = [
-        ...blocksSentSnap.docs.map(doc => doc.data().blockedUserId),
-        ...blocksRecSnap.docs.map(doc => doc.data().blockerId)
+        ...(blocksSentSnap.data || []).map(d => d.blockedUserId),
+        ...(blocksRecSnap.data || []).map(d => d.blockerId)
       ];
 
       // Now query users
-      const usersQuery = query(collection(db, 'users'), limit(50));
-      const usersSnapshot = await getDocs(usersQuery);
+      const { data: usersData } = await supabase.from('users').select('*').limit(50);
       
-      const firestoreProfiles = usersSnapshot.docs
-        .map(doc => doc.data() as UserProfile)
+      const firestoreProfiles = (usersData || [])
         .filter(p => {
-          if (p.uid === auth.currentUser?.uid) return false;
-          if (likedUserIds.includes(p.uid)) return false;
-          if (blockedUserIds.includes(p.uid)) return false;
+          if (p.id === user.id) return false;
+          if (likedUserIds.includes(p.id)) return false;
+          if (blockedUserIds.includes(p.id)) return false;
           
           if (filters.gender !== 'Both') {
              const targetGender = filters.gender === 'Man' ? 'Man' : 'Woman';
@@ -99,20 +84,20 @@ export function Discover({ currentUserAnswers = {}, currentUserPhoto, currentUse
 
   const handleSwipe = async (direction: 'left' | 'right') => {
     const currentProfile = cards[0];
-    if (!currentProfile || !auth.currentUser) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!currentProfile || !user) return;
 
     setLastDirection(direction);
     
     if (direction === 'right') {
       try {
-        const likeId = `${auth.currentUser.uid}_${currentProfile.uid}`;
-        await setDoc(doc(db, 'likes', likeId), {
-          fromId: auth.currentUser.uid,
-          toId: currentProfile.uid,
-          createdAt: serverTimestamp()
+        const { error: likeError } = await supabase.from('likes').upsert({
+          fromId: user.id,
+          toId: currentProfile.id || currentProfile.uid
         });
+        if (likeError) console.error("Error recording like in Discover:", likeError);
       } catch (error) {
-        console.error("Error recording like:", error);
+        console.error("Critical error in handleSwipe:", error);
       }
     }
 
@@ -143,8 +128,8 @@ export function Discover({ currentUserAnswers = {}, currentUserPhoto, currentUse
 
             return (
               <motion.div
-                key={profile.uid}
-                className="absolute inset-0 w-full h-[calc(100%-80px)] rounded-[32px] overflow-hidden bg-white shadow-xl border border-neutral-100 origin-bottom"
+                key={profile.id || profile.uid}
+                className="absolute inset-0 w-full h-[calc(100%-80px)] rounded-[40px] overflow-hidden bg-white shadow-2xl border border-neutral-100 flex flex-col"
                 initial={{ scale: 0.95, y: 20, opacity: 0 }}
                 animate={{ 
                   scale: isFront ? 1 : 0.95, 
@@ -160,62 +145,56 @@ export function Discover({ currentUserAnswers = {}, currentUserPhoto, currentUse
                   else if (offset.x < -100) handleSwipe('left');
                 }}
               >
-                {/* Image background - blurred */}
-                <div className="absolute inset-0 w-full h-full">
+                {/* Compatibility Badge - Floating on Top */}
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setComparisonProfile(profile);
+                  }}
+                  className="absolute top-6 right-6 z-30 group cursor-pointer"
+                >
+                  <div className="bg-white/90 backdrop-blur-md px-3 py-1.5 rounded-2xl flex items-center gap-2 shadow-lg border border-white/50">
+                    <Flame className="w-4 h-4 text-amber-600 fill-amber-600" />
+                    <span className="text-maroon-900 font-bold text-sm font-serif">{profile.match}%</span>
+                  </div>
+                </motion.button>
+
+                {/* Top Section: Image */}
+                <div className="h-[55%] w-full relative shrink-0">
                   <img 
                     src={profile.photo} 
                     alt="Profile"
                     className="w-full h-full object-cover"
                   />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/20 to-transparent" />
                 </div>
 
-                {/* Enhanced Match Score Badge - Top Right */}
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={() => setComparisonProfile(profile)}
-                  className="absolute top-6 right-6 z-20 group cursor-pointer"
-                >
-                  <div className="bg-white/95 backdrop-blur-xl px-4 py-2 rounded-2xl flex items-center gap-2.5 shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-white/20 transition-all group-hover:border-amber-200">
-                    <div className="relative">
-                      <motion.div
-                        animate={{ scale: [1, 1.2, 1] }}
-                        transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
-                        className="absolute inset-0 bg-amber-400/20 blur-md rounded-full"
-                      />
-                      <Flame className="w-5 h-5 text-amber-600 fill-amber-600 relative z-10" />
-                    </div>
-                    <div className="flex flex-col items-start leading-tight">
-                      <span className="text-maroon-900 font-bold text-base font-serif">
-                        {profile.match}%
-                      </span>
-                      <span className="text-[9px] text-amber-700 font-sans font-bold uppercase tracking-tighter opacity-80 group-hover:opacity-100 transition-opacity flex items-center gap-0.5">
-                        Compatibility <Info className="w-2 h-2" />
-                      </span>
-                    </div>
-                  </div>
-                </motion.button>
-
-                <div className="absolute inset-0 p-6 flex flex-col justify-end text-white pb-32 pointer-events-none">
-                  <h3 className="text-3xl font-serif font-bold tracking-wide mb-1">
-                    {profile.name}, {profile.age}
-                  </h3>
-                  
-                  <div className="flex items-center gap-4 text-sm opacity-90 mt-2 font-sans font-medium">
-                    <div className="flex items-center gap-1">
-                      <MapPin className="w-4 h-4" />
-                      {profile.city}
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <Briefcase className="w-4 h-4" />
-                      {profile.profession}
+                {/* Bottom Section: Info - Scrollable */}
+                <div className="flex-1 bg-white relative -mt-8 rounded-t-[40px] shadow-[0_-10px_30px_rgba(0,0,0,0.1)] p-6 overflow-y-auto custom-scrollbar">
+                  <div className="flex justify-between items-start mb-4">
+                    <div>
+                      <h3 className="text-2xl font-serif font-bold text-maroon-900 leading-tight">
+                        {profile.name}, {profile.age}
+                      </h3>
+                      <div className="flex flex-col gap-1.5 mt-2">
+                        <div className="flex items-center gap-2 text-neutral-500 text-xs font-medium uppercase tracking-wider">
+                          <MapPin className="w-3.5 h-3.5 text-amber-600" />
+                          {profile.city}
+                        </div>
+                        <div className="flex items-center gap-2 text-neutral-500 text-xs font-medium uppercase tracking-wider">
+                          <Briefcase className="w-3.5 h-3.5 text-amber-600" />
+                          {profile.profession}
+                        </div>
+                      </div>
                     </div>
                   </div>
 
-                  <div className="flex flex-wrap gap-2 mt-4 mb-4">
+                  {/* Interests Chips */}
+                  <div className="flex flex-wrap gap-1.5 mb-6">
                     {profile.interests?.map(interest => (
-                      <span key={interest} className="text-[10px] bg-white/10 backdrop-blur-md px-2 py-1 rounded-full font-medium border border-white/20">
+                      <span key={interest} className="text-[9px] bg-neutral-50 text-neutral-600 px-3 py-1.5 rounded-full font-bold border border-neutral-100 uppercase tracking-tight">
                         {interest}
                       </span>
                     ))}
@@ -223,17 +202,27 @@ export function Discover({ currentUserAnswers = {}, currentUserPhoto, currentUse
 
                   {/* Profile Prompts */}
                   {profile.prompts && Object.entries(profile.prompts).length > 0 && (
-                    <div className="space-y-4 mt-2">
-                       {Object.entries(profile.prompts).slice(0, 2).map(([q, a], idx) => (
-                         <div key={idx} className="bg-white/5 backdrop-blur-sm rounded-2xl p-3 border border-white/10 shadow-lg">
-                           <p className="text-[8px] font-sans font-bold text-amber-400 uppercase tracking-widest mb-1">{q}</p>
-                           <p className="text-sm font-serif italic leading-snug">"{a}"</p>
+                    <div className="space-y-4">
+                       {Object.entries(profile.prompts).map(([q, a], idx) => (
+                         <div key={idx} className="bg-ivory/50 rounded-2xl p-4 border border-amber-100/50">
+                           <p className="text-[9px] font-sans font-bold text-amber-700 uppercase tracking-widest mb-1.5 opacity-70">{q}</p>
+                           <p className="text-sm font-serif italic text-maroon-950 leading-relaxed">"{a}"</p>
                          </div>
                        ))}
                     </div>
                   )}
-                </div>
 
+                  {/* Temple Info if available */}
+                  {profile.temple && (
+                    <div className="mt-6 pt-6 border-t border-neutral-50 flex items-center gap-3 text-neutral-400">
+                      <Compass className="w-4 h-4" />
+                      <span className="text-[10px] font-medium uppercase tracking-widest">Atash Behram: {profile.temple}</span>
+                    </div>
+                  )}
+                  
+                  {/* Padding for the swipe buttons */}
+                  <div className="h-24" />
+                </div>
               </motion.div>
             );
           })}

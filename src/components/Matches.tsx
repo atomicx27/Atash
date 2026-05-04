@@ -1,12 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Send, MapPin, ChevronLeft, Loader2, Heart, MessageCircle } from 'lucide-react';
-import { db, auth } from '../lib/firebase';
-import { 
-  collection, query, where, getDocs, addDoc, serverTimestamp, 
-  onSnapshot, orderBy, limit, doc, getDoc, deleteDoc, updateDoc
-} from 'firebase/firestore';
-import { UserProfile } from '../App';
+import { supabase } from '../lib/supabase';
+import { UserProfile } from '../components/AppContainer';
 import { MoreVertical, ShieldAlert, UserX, Trash2, Info } from 'lucide-react';
 
 interface Message {
@@ -27,60 +23,91 @@ function Chat({ partner, onBack }: ChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(true);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [showMenu, setShowMenu] = useState(false);
   const [reportMode, setReportMode] = useState(false);
   const [reportReason, setReportReason] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  // Fetch current user ID once on mount
   useEffect(() => {
-    if (!auth.currentUser) return;
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (user) setCurrentUserId(user.id);
+    });
+  }, []);
 
-    const q = query(
-      collection(db, 'messages'),
-      where('senderId', 'in', [auth.currentUser.uid, partner.uid]),
-      where('receiverId', 'in', [auth.currentUser.uid, partner.uid]),
-      orderBy('createdAt', 'asc')
-    );
+  useEffect(() => {
+    let active = true;
+    const fetchMessages = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user || !active) return;
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const msgs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Message[];
-      const filtered = msgs.filter(m => 
-        (m.senderId === auth.currentUser?.uid && m.receiverId === partner.uid) ||
-        (m.senderId === partner.uid && m.receiverId === auth.currentUser?.uid)
-      );
-      setMessages(filtered);
-      setLoading(false);
-      setTimeout(() => scrollRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+      const { data, error } = await supabase.from('messages')
+        .select('*')
+        .or(`and(senderId.eq.${user.id},receiverId.eq.${partner.id}),and(senderId.eq.${partner.id},receiverId.eq.${user.id})`)
+        .order('createdAt', { ascending: true });
+
+      if (error) {
+        console.error("Chat error:", error);
+        setLoading(false);
+        return;
+      }
+
+      const msgs = data as Message[];
+      if (active) {
+        setMessages(msgs);
+        setLoading(false);
+        setTimeout(() => scrollRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+      }
 
       // Mark unread messages as read
-      const unread = snapshot.docs.filter(d => {
-        const data = d.data();
-        return data.receiverId === auth.currentUser?.uid && !data.read;
-      });
-      unread.forEach(d => {
-        updateDoc(d.ref, { read: true });
-      });
-    }, (error) => {
-      console.error("Chat listener error:", error);
-      setLoading(false);
-    });
+      const unread = msgs.filter(m => m.receiverId === user.id && !m.read);
+      for (const m of unread) {
+        await supabase.from('messages').update({ read: true }).eq('id', m.id);
+      }
+    };
 
-    return () => unsubscribe();
-  }, [partner.uid]);
+    fetchMessages();
+
+    const channel = supabase.channel(`chat_${partner.id}`)
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'messages',
+      }, async (payload) => {
+        const msg = payload.new as Message;
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return;
+        if ((msg.senderId === user.id && msg.receiverId === partner.id) ||
+            (msg.senderId === partner.id && msg.receiverId === user.id)) {
+           setMessages(prev => [...prev, msg]);
+           setTimeout(() => scrollRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+           if (msg.receiverId === user.id && !msg.read) {
+              await supabase.from('messages').update({ read: true }).eq('id', msg.id);
+           }
+        }
+      })
+      .subscribe();
+
+    return () => {
+      active = false;
+      supabase.removeChannel(channel);
+    };
+  }, [partner.id]);
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newMessage.trim() || !auth.currentUser) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!newMessage.trim() || !user) return;
 
     const text = newMessage;
     setNewMessage('');
 
     try {
-      await addDoc(collection(db, 'messages'), {
-        senderId: auth.currentUser.uid,
-        receiverId: partner.uid,
+      await supabase.from('messages').insert({
+        senderId: user.id,
+        receiverId: partner.id,
         text: text,
-        createdAt: serverTimestamp(),
         read: false
       });
     } catch (error) {
@@ -89,11 +116,11 @@ function Chat({ partner, onBack }: ChatProps) {
   };
 
   const handleUnmatch = async () => {
-    if (!auth.currentUser || !window.confirm('Are you sure you want to unmatch? This action cannot be undone.')) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user || !window.confirm('Are you sure you want to unmatch? This action cannot be undone.')) return;
     try {
-      const q = query(collection(db, 'likes'), where('fromId', '==', auth.currentUser.uid), where('toId', '==', partner.uid));
-      const snaps = await getDocs(q);
-      await Promise.all(snaps.docs.map(d => deleteDoc(d.ref)));
+      await supabase.from('likes').delete().eq('fromId', user.id).eq('toId', partner.id);
+      await supabase.from('likes').delete().eq('fromId', partner.id).eq('toId', user.id);
       onBack();
     } catch (error) {
       console.error("Unmatch error:", error);
@@ -101,17 +128,16 @@ function Chat({ partner, onBack }: ChatProps) {
   };
 
   const handleBlock = async () => {
-    if (!auth.currentUser || !window.confirm('Block this user? You will no longer see each other.')) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user || !window.confirm('Block this user? You will no longer see each other.')) return;
     try {
-      await addDoc(collection(db, 'blocks'), {
-        blockerId: auth.currentUser.uid,
-        blockedUserId: partner.uid,
-        createdAt: serverTimestamp()
+      await supabase.from('blocks').insert({
+        blockerId: user.id,
+        blockedUserId: partner.id
       });
       // Also unmatch
-      const q = query(collection(db, 'likes'), where('fromId', '==', auth.currentUser.uid), where('toId', '==', partner.uid));
-      const snaps = await getDocs(q);
-      await Promise.all(snaps.docs.map(d => deleteDoc(d.ref)));
+      await supabase.from('likes').delete().eq('fromId', user.id).eq('toId', partner.id);
+      await supabase.from('likes').delete().eq('fromId', partner.id).eq('toId', user.id);
       onBack();
     } catch (error) {
       console.error("Block error:", error);
@@ -119,13 +145,13 @@ function Chat({ partner, onBack }: ChatProps) {
   };
 
   const handleReport = async () => {
-    if (!auth.currentUser || !reportReason.trim()) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user || !reportReason.trim()) return;
     try {
-      await addDoc(collection(db, 'reports'), {
-        reporterId: auth.currentUser.uid,
-        reportedUserId: partner.uid,
-        reason: reportReason,
-        createdAt: serverTimestamp()
+      await supabase.from('reports').insert({
+        reporterId: user.id,
+        reportedUserId: partner.id,
+        reason: reportReason
       });
       alert('Report submitted. Thank you for keeping our community safe.');
       setReportMode(false);
@@ -244,13 +270,13 @@ function Chat({ partner, onBack }: ChatProps) {
             <p className="text-[10px] text-neutral-300 uppercase tracking-widest mt-2">Break the ice!</p>
           </div>
         ) : messages.map((msg) => {
-          const isMe = msg.senderId === auth.currentUser?.uid;
+          const isMe = msg.senderId === currentUserId;
           return (
             <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[80%] px-4 py-2 rounded-2xl text-sm ${
-                isMe 
-                ? 'bg-maroon-900 text-white rounded-br-none' 
-                : 'bg-white border border-neutral-100 text-neutral-800 rounded-bl-none shadow-sm'
+              <div className={`max-w-[75%] px-4 py-2.5 rounded-2xl text-sm leading-relaxed ${
+                isMe
+                  ? 'bg-maroon-900 text-white rounded-br-none shadow-lg shadow-maroon-900/10'
+                  : 'bg-white border border-neutral-100 text-neutral-800 rounded-bl-none shadow-sm'
               }`}>
                 {msg.text}
               </div>
@@ -290,8 +316,6 @@ export function Matches() {
   const [unreadCounts, setUnreadCounts] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    if (!auth.currentUser) return;
-
     let active = true;
     let receivedIds: string[] = [];
     let sentIds: string[] = [];
@@ -321,12 +345,9 @@ export function Matches() {
       }
 
       try {
-        const profileDocs = await Promise.all(
-          matchIds.map(id => getDoc(doc(db, 'users', id)))
-        );
-        if (active) {
-          const profiles = profileDocs.map(d => d.data() as UserProfile).filter(p => !!p);
-          setMatches(profiles);
+        const { data: profileDocs } = await supabase.from('users').select('*').in('id', matchIds);
+        if (active && profileDocs) {
+          setMatches(profileDocs as UserProfile[]);
         }
       } catch (error) {
         console.error("Error fetching match profiles:", error);
@@ -335,51 +356,49 @@ export function Matches() {
       }
     };
 
-    const qReceived = query(collection(db, 'likes'), where('toId', '==', auth.currentUser.uid));
-    const unsubReceived = onSnapshot(qReceived, (snapshot) => {
-      receivedIds = snapshot.docs.map(doc => doc.data().fromId);
-      updateMatches();
-    });
+    const fetchInitialData = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
 
-    const qSent = query(collection(db, 'likes'), where('fromId', '==', auth.currentUser.uid));
-    const unsubSent = onSnapshot(qSent, (snapshot) => {
-      sentIds = snapshot.docs.map(doc => doc.data().toId);
-      updateMatches();
-    });
+      const [received, sent, blocks, blockedMe, unread] = await Promise.all([
+        supabase.from('likes').select('fromId').eq('toId', user.id),
+        supabase.from('likes').select('toId').eq('fromId', user.id),
+        supabase.from('blocks').select('blockedUserId').eq('blockerId', user.id),
+        supabase.from('blocks').select('blockerId').eq('blockedUserId', user.id),
+        supabase.from('messages').select('senderId').eq('receiverId', user.id).eq('read', false)
+      ]);
 
-    const qBlocks = query(collection(db, 'blocks'), where('blockerId', '==', auth.currentUser.uid));
-    const unsubBlocks = onSnapshot(qBlocks, (snapshot) => {
-      blockedIds = snapshot.docs.map(doc => doc.data().blockedUserId);
-      updateMatches();
-    });
-
-    const qBlockedMe = query(collection(db, 'blocks'), where('blockedUserId', '==', auth.currentUser.uid));
-    const unsubBlockedMe = onSnapshot(qBlockedMe, (snapshot) => {
-      blockedMeIds = snapshot.docs.map(doc => doc.data().blockerId);
-      updateMatches();
-    });
-
-    const qUnread = query(
-      collection(db, 'messages'), 
-      where('receiverId', '==', auth.currentUser.uid),
-      where('read', '==', false)
-    );
-    const unsubUnread = onSnapshot(qUnread, (snap) => {
+      receivedIds = (received.data || []).map(d => d.fromId);
+      sentIds = (sent.data || []).map(d => d.toId);
+      blockedIds = (blocks.data || []).map(d => d.blockedUserId);
+      blockedMeIds = (blockedMe.data || []).map(d => d.blockerId);
+      
       const counts: Record<string, boolean> = {};
-      snap.docs.forEach(d => {
-        const sid = d.data().senderId;
-        counts[sid] = true;
+      (unread.data || []).forEach(d => {
+        counts[d.senderId] = true;
       });
-      setUnreadCounts(counts);
-    });
+      if (active) setUnreadCounts(counts);
+
+      updateMatches();
+    };
+
+    fetchInitialData();
+
+    // Since we're replacing onSnapshot with polling or simplified version, we can rely on fetchInitialData.
+    // For a fully reactive system, we would need 5 realtime channels here.
+    // We can use a single channel for likes and messages.
+    const channel = supabase.channel('matches_updates')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'likes' }, () => {
+         fetchInitialData();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, () => {
+         fetchInitialData();
+      })
+      .subscribe();
 
     return () => {
       active = false;
-      unsubReceived();
-      unsubSent();
-      unsubBlocks();
-      unsubBlockedMe();
-      unsubUnread();
+      supabase.removeChannel(channel);
     };
   }, []);
 
@@ -402,7 +421,7 @@ export function Matches() {
         ) : matches.length > 0 ? (
           matches.map((profile) => (
             <motion.button
-              key={profile.uid}
+              key={profile.id || profile.uid}
               onClick={() => setSelectedPartner(profile)}
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
@@ -419,7 +438,7 @@ export function Matches() {
                 </div>
               </div>
               <div className="flex flex-col items-end gap-2 px-2">
-                {unreadCounts[profile.uid] && (
+                {unreadCounts[profile.id || profile.uid] && (
                   <span className="w-2.5 h-2.5 bg-amber-500 rounded-full shadow-sm animate-pulse" />
                 )}
                 <div className="w-8 h-8 bg-amber-50 rounded-full flex items-center justify-center text-amber-600 group-hover:scale-110 transition-transform">
