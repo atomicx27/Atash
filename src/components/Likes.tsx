@@ -1,0 +1,188 @@
+import React, { useState, useEffect } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import { Heart, MessagesSquare, MapPin, User, ChevronRight, Star } from 'lucide-react';
+import { db, auth } from '../lib/firebase';
+import { collection, query, where, getDocs, setDoc, serverTimestamp, doc, getDoc, onSnapshot } from 'firebase/firestore';
+import { UserProfile } from '../App';
+
+interface LikedProfile extends UserProfile {
+  likeId: string;
+}
+
+export function Likes() {
+  const [activeTab, setActiveTab] = useState<'received' | 'sent'>('received');
+  const [receivedLikes, setReceivedLikes] = useState<LikedProfile[]>([]);
+  const [sentLikes, setSentLikes] = useState<LikedProfile[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!auth.currentUser) return;
+
+    // Listen for likes received by the current user
+    const receivedQuery = query(
+      collection(db, 'likes'),
+      where('toId', '==', auth.currentUser.uid)
+    );
+
+    const unsubReceived = onSnapshot(receivedQuery, async (snapshot) => {
+      const likesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const profiles = await Promise.all(
+        likesData.map(async (like: any) => {
+          const userDoc = await getDoc(doc(db, 'users', like.fromId));
+          return { ...userDoc.data(), likeId: like.id } as LikedProfile;
+        })
+      );
+      setReceivedLikes(profiles.filter(p => !!p.uid));
+    });
+
+    // Listen for likes sent by the current user
+    const sentQuery = query(
+      collection(db, 'likes'),
+      where('fromId', '==', auth.currentUser.uid)
+    );
+
+    const unsubSent = onSnapshot(sentQuery, async (snapshot) => {
+      const likesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const profiles = await Promise.all(
+        likesData.map(async (like: any) => {
+          const userDoc = await getDoc(doc(db, 'users', like.toId));
+          return { ...userDoc.data(), likeId: like.id } as LikedProfile;
+        })
+      );
+      setSentLikes(profiles.filter(p => !!p.uid));
+      setLoading(false);
+    });
+
+    return () => {
+      unsubReceived();
+      unsubSent();
+    };
+  }, []);
+
+  const handleLikeBack = async (targetUserId: string) => {
+    if (!auth.currentUser) return;
+    try {
+      const likeId = `${auth.currentUser.uid}_${targetUserId}`;
+      await setDoc(doc(db, 'likes', likeId), {
+        fromId: auth.currentUser.uid,
+        toId: targetUserId,
+        createdAt: serverTimestamp()
+      });
+      alert("It's a Match! You can now message them.");
+    } catch (error) {
+      console.error("Error matching back:", error);
+    }
+  };
+
+  const matches = sentLikes.filter(sent => 
+    receivedLikes.some(received => received.uid === sent.uid)
+  );
+
+  return (
+    <div className="h-full w-full flex flex-col pt-12 px-4 pb-20">
+      <div className="mb-8 px-2">
+        <h2 className="text-2xl text-maroon-900 serif font-bold tracking-tight">Your Likes</h2>
+        <p className="text-sm text-neutral-400 mt-1">People interested in preserving the faith.</p>
+      </div>
+
+      <div className="flex bg-neutral-100 p-1 rounded-2xl mb-8">
+        <button 
+          onClick={() => setActiveTab('received')}
+          className={`flex-1 py-3 rounded-xl text-xs font-bold uppercase tracking-widest transition-all ${activeTab === 'received' ? 'bg-white text-maroon-900 shadow-sm' : 'text-neutral-400'}`}
+        >
+          Interested ({receivedLikes.length})
+        </button>
+        <button 
+          onClick={() => setActiveTab('sent')}
+          className={`flex-1 py-3 rounded-xl text-xs font-bold uppercase tracking-widest transition-all ${activeTab === 'sent' ? 'bg-white text-maroon-900 shadow-sm' : 'text-neutral-400'}`}
+        >
+          My Likes ({sentLikes.length})
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto">
+        <AnimatePresence mode="wait">
+          {loading ? (
+            <div className="flex items-center justify-center h-40">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-maroon-900" />
+            </div>
+          ) : (
+            <motion.div
+              key={activeTab}
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="grid grid-cols-2 gap-4"
+            >
+              {(activeTab === 'received' ? receivedLikes : sentLikes).map((profile) => {
+                const isMatch = matches.some(m => m.uid === profile.uid);
+                
+                return (
+                  <motion.div
+                    key={profile.uid}
+                    layout
+                    className="bg-white rounded-3xl overflow-hidden shadow-sm border border-neutral-100 flex flex-col group"
+                  >
+                    <div className="aspect-[3/4] relative">
+                      <img 
+                        src={profile.photo || 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=800&q=80'} 
+                        alt={profile.name}
+                        className="w-full h-full object-cover"
+                      />
+                      {isMatch && (
+                        <div className="absolute top-2 right-2 bg-green-500 text-white p-1.5 rounded-full shadow-lg">
+                          <Star className="w-3 h-3 fill-current" />
+                        </div>
+                      )}
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
+                      <div className="absolute bottom-3 left-3 text-white">
+                        <p className="font-serif font-bold text-sm">{profile.name}, {profile.age}</p>
+                        <div className="flex items-center gap-1 opacity-80 mt-0.5">
+                          <MapPin className="w-2.5 h-2.5" />
+                          <span className="text-[10px] font-medium">{profile.city.split(',')[0]}</span>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div className="p-3">
+                      {activeTab === 'received' && !isMatch ? (
+                        <button 
+                          onClick={() => handleLikeBack(profile.uid)}
+                          className="w-full py-2 bg-maroon-900 text-white rounded-xl text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 active:scale-95 transition-all shadow-md shadow-maroon-900/10"
+                        >
+                          <Heart className="w-3 h-3 fill-current" />
+                          Like Back
+                        </button>
+                      ) : isMatch ? (
+                        <button 
+                          className="w-full py-2 bg-green-50 text-green-600 rounded-xl text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-1.5"
+                          disabled
+                        >
+                          <MessagesSquare className="w-3 h-3 fill-current" />
+                          Matched
+                        </button>
+                      ) : (
+                        <div className="py-2 text-center text-[10px] text-neutral-400 font-bold uppercase tracking-widest">
+                          Pending
+                        </div>
+                      )}
+                    </div>
+                  </motion.div>
+                );
+              })}
+
+              {(activeTab === 'received' ? receivedLikes : sentLikes).length === 0 && (
+                <div className="col-span-2 py-20 text-center text-neutral-400">
+                  <Heart className="w-12 h-12 mx-auto mb-4 opacity-20" />
+                  <p className="font-serif italic">
+                    {activeTab === 'received' ? 'Waiting for the light of attraction...' : 'Go find a fellow Parsi in Discover!'}
+                  </p>
+                </div>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    </div>
+  );
+}
