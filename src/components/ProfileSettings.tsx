@@ -13,7 +13,7 @@ const PROMPT_OPTIONS = [
   "My typical Sunday involves..."
 ];
 
-import { auth } from '../lib/firebase';
+import { supabase } from '../lib/supabase';
 import { UserProfile } from '../App';
 import { QUESTIONS } from './Quiz';
 
@@ -106,7 +106,7 @@ export function ProfileSettings({ profile, onUpdateProfile, quizAnswers, onUpdat
         </div>
         <button 
           onClick={async () => {
-            await auth.signOut();
+            await supabase.auth.signOut();
           }}
           className="p-3 bg-red-50 text-red-600 rounded-full hover:bg-red-100 transition-colors shadow-sm"
           title="Sign Out"
@@ -562,7 +562,7 @@ export function ProfileSettings({ profile, onUpdateProfile, quizAnswers, onUpdat
         <div className="pt-8">
           <button 
             onClick={async () => {
-              await auth.signOut();
+              await supabase.auth.signOut();
             }}
             className="w-full py-4 bg-red-50 text-red-600 rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-red-100 transition-colors shadow-sm active:scale-95"
           >

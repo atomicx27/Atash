@@ -1,18 +1,11 @@
+"use client";
+
 import React, { useState, useEffect } from 'react';
-import { Onboarding } from './components/Onboarding';
-import { ProfileSetup } from './components/ProfileSetup';
-import { MainApp } from './components/MainApp';
-import { Quiz } from './components/Quiz';
-import { auth, db, googleProvider, signInWithPopup } from './lib/firebase';
-import { 
-  onAuthStateChanged, 
-  signOut, 
-  createUserWithEmailAndPassword, 
-  signInWithEmailAndPassword,
-  updateProfile,
-  sendPasswordResetEmail
-} from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { Onboarding } from './Onboarding';
+import { ProfileSetup } from './ProfileSetup';
+import { MainApp } from './MainApp';
+import { Quiz } from './Quiz';
+import { supabase } from '../lib/supabase';
 import { customAlphabet } from 'nanoid';
 import { Flame, Mail, Lock, User, ArrowLeft, Loader2 } from 'lucide-react';
 
@@ -22,6 +15,7 @@ const MASTER_CODE = '21040721';
 export type ScreenState = 'loading' | 'onboarding' | 'auth-check' | 'quiz' | 'profile-setup' | 'main';
 
 export interface UserProfile {
+  id: string;
   uid: string;
   name: string;
   email?: string;
@@ -34,15 +28,17 @@ export interface UserProfile {
   prompts: Record<string, string>;
   temple: string;
   photo?: string;
+  photoFile?: File;
   interests: string[];
   gender: string;
   lookingFor: string;
   voucherCode: string;
   referredByCode: string;
   quizAnswers: Record<number, number>;
+  match?: number;
 }
 
-export default function App() {
+export default function AppContainer() {
   const [currentScreen, setCurrentScreen] = useState<ScreenState>('loading');
   const [user, setUser] = useState<any>(null);
   const [quizAnswers, setQuizAnswers] = useState<Record<number, number>>({});
@@ -57,34 +53,56 @@ export default function App() {
   const [resetSent, setResetSent] = useState(false);
 
   useEffect(() => {
-    return onAuthStateChanged(auth, async (authUser) => {
-      if (authUser) {
-        setUser(authUser);
-        const userDoc = await getDoc(doc(db, 'users', authUser.uid));
-        if (userDoc.exists()) {
-          const data = userDoc.data() as UserProfile;
-          setProfile(data);
-          setQuizAnswers(data.quizAnswers || {});
-          setCurrentScreen('main');
-        } else {
-          // Logged in but no profile.
-          // If we have a referredByCode, they are in the onboarding flow.
-          if (referredByCode) {
-            setCurrentScreen('quiz');
-          } else {
-            // New user but no voucher code - sign them out to prevent bypass
-            await signOut(auth);
-            setUser(null);
-            setCurrentScreen('onboarding');
-          }
-        }
-      } else {
-        setUser(null);
-        setProfile(null);
-        setCurrentScreen('onboarding');
-      }
+    const checkUser = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      handleAuthChange(session?.user || null);
+    };
+
+    checkUser();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      handleAuthChange(session?.user || null);
     });
+
+    return () => {
+      subscription.unsubscribe();
+    };
   }, [referredByCode]);
+
+  const handleAuthChange = async (authUser: any) => {
+    if (authUser) {
+      setUser(authUser);
+      const { data: userDoc } = await supabase.from('users').select('*').eq('id', authUser.id).single();
+      
+      if (userDoc) {
+        const data = userDoc as any;
+        const mappedProfile: UserProfile = {
+          ...data,
+          uid: data.id,
+          jobTitle: data.jobTitle,
+          lookingFor: data.lookingFor,
+          voucherCode: data.voucherCode,
+          referredByCode: data.referredByCode,
+          quizAnswers: data.quizAnswers || {}
+        };
+        setProfile(mappedProfile);
+        setQuizAnswers(mappedProfile.quizAnswers);
+        setCurrentScreen('main');
+      } else {
+        if (referredByCode) {
+          setCurrentScreen('quiz');
+        } else {
+          await supabase.auth.signOut();
+          setUser(null);
+          setCurrentScreen('onboarding');
+        }
+      }
+    } else {
+      setUser(null);
+      setProfile(null);
+      setCurrentScreen('onboarding');
+    }
+  };
 
   const handleVoucherSubmit = async (code: string) => {
     setReferredByCode(code);
@@ -102,8 +120,13 @@ export default function App() {
     setAuthLoading(true);
     setAuthError('');
     try {
-      await signInWithPopup(auth, googleProvider);
-      // onAuthStateChanged will redirect to main or quiz
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin
+        }
+      });
+      if (error) throw error;
     } catch (error: any) {
       console.error("Auth error:", error);
       setAuthError("Google login failed. Please try again.");
@@ -119,12 +142,25 @@ export default function App() {
     setResetSent(false);
     try {
       if (authMode === 'email-signup') {
-        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-        if (name) {
-          await updateProfile(userCredential.user, { displayName: name });
+        const { error, data } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: {
+              full_name: name
+            }
+          }
+        });
+        if (error) throw error;
+        if (data.user) {
+           setUser(data.user);
         }
       } else {
-        await signInWithEmailAndPassword(auth, email, password);
+        const { error } = await supabase.auth.signInWithPassword({
+          email,
+          password
+        });
+        if (error) throw error;
       }
     } catch (error: any) {
       console.error("Email auth error:", error);
@@ -142,7 +178,8 @@ export default function App() {
     setAuthLoading(true);
     setAuthError('');
     try {
-      await sendPasswordResetEmail(auth, email);
+      const { error } = await supabase.auth.resetPasswordForEmail(email);
+      if (error) throw error;
       setResetSent(true);
     } catch (error: any) {
       console.error("Reset error:", error);
@@ -156,24 +193,64 @@ export default function App() {
     if (!user) return;
     
     const newUserVoucher = nanoid();
-    const fullProfile: UserProfile = {
-      ...data,
-      uid: user.uid,
+    
+    const dbProfile = {
+      id: user.id,
+      name: data.name,
       email: user.email || '',
+      age: data.age,
+      city: data.city,
+      profession: data.profession,
+      jobTitle: data.jobTitle,
+      company: data.company,
+      education: data.education,
+      prompts: data.prompts || {},
+      temple: data.temple,
+      photo: data.photo || null,
+      interests: data.interests || [],
+      gender: data.gender,
+      lookingFor: data.lookingFor,
       voucherCode: newUserVoucher,
       referredByCode: referredByCode,
-      quizAnswers: quizAnswers
+      quizAnswers: quizAnswers || {}
     };
 
     try {
-      // Save User
-      await setDoc(doc(db, 'users', user.uid), fullProfile);
-      // Save Voucher Mapping
-      await setDoc(doc(db, 'vouchers', newUserVoucher), {
+      let finalPhotoUrl = dbProfile.photo;
+      if (data.photoFile) {
+        const fileExt = data.photoFile.name.split('.').pop();
+        const fileName = `${user.id}-${Math.random()}.${fileExt}`;
+        const { error: uploadError, data: uploadData } = await supabase.storage
+          .from('avatars')
+          .upload(fileName, data.photoFile);
+          
+        if (!uploadError && uploadData) {
+          const { data: publicUrlData } = supabase.storage
+            .from('avatars')
+            .getPublicUrl(fileName);
+          finalPhotoUrl = publicUrlData.publicUrl;
+          dbProfile.photo = finalPhotoUrl;
+        }
+      }
+
+      const { error: profileError } = await supabase.from('users').upsert(dbProfile);
+      if (profileError) throw profileError;
+
+      const { error: voucherError } = await supabase.from('vouchers').insert({
         code: newUserVoucher,
-        ownerId: user.uid,
-        createdAt: new Date().toISOString()
+        ownerId: user.id
       });
+      if (voucherError) throw voucherError;
+
+      const fullProfile: UserProfile = {
+        ...data,
+        uid: user.id,
+        email: user.email || '',
+        photo: finalPhotoUrl,
+        voucherCode: newUserVoucher,
+        referredByCode: referredByCode,
+        quizAnswers: quizAnswers
+      };
 
       setProfile(fullProfile);
       setCurrentScreen('main');
@@ -195,15 +272,19 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-neutral-900 flex items-center justify-center p-4">
-      {/* Mobile Device Frame */}
-      <div className="relative w-full max-w-[400px] h-[850px] max-h-[90vh] bg-ivory rounded-[3rem] shadow-2xl overflow-hidden ring-[14px] ring-neutral-800 flex flex-col">
-        {/* Notch simulation */}
-        <div className="absolute top-0 inset-x-0 h-6 flex justify-center z-50">
+    <div className="min-h-screen bg-neutral-900 flex items-center justify-center sm:p-4 transition-all duration-500">
+      {/* Dynamic Device Frame: Full screen on mobile, card on desktop */}
+      <div className="relative w-full sm:max-w-[400px] h-screen sm:h-[850px] sm:max-h-[90vh] bg-ivory sm:rounded-[3rem] shadow-2xl overflow-hidden sm:ring-[14px] sm:ring-neutral-800 flex flex-col transition-all duration-500">
+        
+        {/* Notch simulation - Desktop only */}
+        <div className="hidden sm:flex absolute top-0 inset-x-0 h-6 justify-center z-50 pointer-events-none">
           <div className="w-1/3 h-5 bg-neutral-800 rounded-b-2xl"></div>
         </div>
 
-        <div className="flex-1 overflow-y-auto relative h-full w-full bg-ivory pb-8">
+        {/* Dynamic Notch/Header space for mobile */}
+        <div className="sm:hidden h-8 bg-white shrink-0" />
+
+        <div className="flex-1 overflow-y-auto relative h-full w-full bg-ivory">
           {currentScreen === 'onboarding' && (
             <Onboarding onVoucherValid={handleVoucherSubmit} onLoginClick={handleLoginClick} />
           )}
@@ -257,16 +338,16 @@ export default function App() {
                       </button>
                     </div>
                   ) : (
-                    <div className="mt-12 pt-8 border-t border-neutral-100 w-full">
-                      <p className="text-xs text-neutral-400 mb-4 font-sans uppercase tracking-widest">Don't have an account?</p>
-                      <button
-                        onClick={() => setCurrentScreen('onboarding')}
-                        className="w-full py-4 text-maroon-900 font-bold border-2 border-maroon-900/10 rounded-full hover:bg-maroon-50 transition-all active:scale-[0.98]"
-                      >
-                        Enter Voucher Code
-                      </button>
-                    </div>
-                  )}
+                     <div className="mt-12 pt-8 border-t border-neutral-100 w-full">
+                       <p className="text-xs text-neutral-400 mb-4 font-sans uppercase tracking-widest">Don't have an account?</p>
+                       <button
+                         onClick={() => setCurrentScreen('onboarding')}
+                         className="w-full py-4 text-maroon-900 font-bold border-2 border-maroon-900/10 rounded-full hover:bg-maroon-50 transition-all active:scale-[0.98]"
+                       >
+                         Enter Voucher Code
+                       </button>
+                     </div>
+                   )}
 
                   <button 
                     onClick={() => setCurrentScreen('onboarding')}
@@ -403,14 +484,45 @@ export default function App() {
             <MainApp 
               currentUserAnswers={quizAnswers} 
               userProfile={profile}
-              onUpdateProfile={(updated) => {
-                setProfile(updated as UserProfile);
-                setDoc(doc(db, 'users', user.uid), updated);
+              onUpdateProfile={async (updated) => {
+                let finalPhotoUrl = updated.photo;
+                if (updated.photoFile) {
+                  const fileExt = updated.photoFile.name.split('.').pop();
+                  const fileName = `${user.id}-${Math.random()}.${fileExt}`;
+                  const { error: uploadError, data: uploadData } = await supabase.storage
+                    .from('avatars')
+                    .upload(fileName, updated.photoFile);
+                    
+                  if (!uploadError && uploadData) {
+                    const { data: publicUrlData } = supabase.storage
+                      .from('avatars')
+                      .getPublicUrl(fileName);
+                    finalPhotoUrl = publicUrlData.publicUrl;
+                  }
+                }
+                
+                const finalUpdated = { ...updated, photo: finalPhotoUrl };
+                setProfile(finalUpdated as UserProfile);
+                await supabase.from('users').update({
+                  name: updated.name,
+                  age: updated.age,
+                  city: updated.city,
+                  profession: updated.profession,
+                  jobTitle: updated.jobTitle,
+                  company: updated.company,
+                  education: updated.education,
+                  prompts: updated.prompts,
+                  temple: updated.temple,
+                  photo: finalPhotoUrl,
+                  interests: updated.interests,
+                  gender: updated.gender,
+                  lookingFor: updated.lookingFor
+                }).eq('id', user.id);
               }}
-              onUpdateQuiz={(answers) => {
+              onUpdateQuiz={async (answers) => {
                 setQuizAnswers(answers);
                 if (profile) {
-                  setDoc(doc(db, 'users', user.uid), { ...profile, quizAnswers: answers });
+                  await supabase.from('users').update({ quizAnswers: answers }).eq('id', user.id);
                 }
               }}
             />

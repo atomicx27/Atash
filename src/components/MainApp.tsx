@@ -6,9 +6,9 @@ import { Quiz } from './Quiz';
 import { ProfileSettings } from './ProfileSettings';
 import { Likes } from './Likes';
 import { Matches } from './Matches';
-import { UserProfile } from '../App';
-import { db, auth } from '../lib/firebase';
-import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { UserProfile } from './AppContainer';
+import { supabase } from '../lib/supabase';
+import { motion } from 'motion/react';
 
 export type TabState = 'discover' | 'likes' | 'matches' | 'events' | 'profile';
 
@@ -21,7 +21,7 @@ interface MainAppProps {
 
 export function MainApp({ 
   currentUserAnswers = {}, 
-  userProfile = { uid: '', name: '', email: '', age: '', city: '', profession: '', jobTitle: '', company: '', education: '', prompts: {}, temple: '', interests: [], gender: '', lookingFor: '', voucherCode: '', referredByCode: '', quizAnswers: {} },
+  userProfile = { id: '', uid: '', name: '', email: '', age: '', city: '', profession: '', jobTitle: '', company: '', education: '', prompts: {}, temple: '', interests: [], gender: '', lookingFor: '', voucherCode: '', referredByCode: '', quizAnswers: {} },
   onUpdateProfile = () => {},
   onUpdateQuiz = () => {}
 }: MainAppProps) {
@@ -29,16 +29,33 @@ export function MainApp({
   const [hasUnread, setHasUnread] = useState(false);
 
   useEffect(() => {
-    if (!auth.currentUser) return;
-    const q = query(
-      collection(db, 'messages'),
-      where('receiverId', '==', auth.currentUser.uid),
-      where('read', '==', false)
-    );
-    const unsub = onSnapshot(q, (snap) => {
-      setHasUnread(!snap.empty);
-    });
-    return () => unsub();
+    let active = true;
+    const fetchUnread = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user || !active) return;
+      const { data, error } = await supabase.from('messages')
+        .select('id')
+        .eq('receiverId', user.id)
+        .eq('read', false)
+        .limit(1);
+      
+      if (active && !error) {
+         setHasUnread(data && data.length > 0);
+      }
+    };
+
+    fetchUnread();
+    
+    const channel = supabase.channel('unread_messages')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, () => {
+        fetchUnread();
+      })
+      .subscribe();
+      
+    return () => {
+       active = false;
+       supabase.removeChannel(channel);
+    };
   }, []);
 
   return (
@@ -62,7 +79,7 @@ export function MainApp({
         )}
       </div>
 
-      <div className="absolute bottom-0 left-0 right-0 h-20 bg-white border-t border-neutral-100 flex justify-around items-center px-4 pb-4 pt-2 shadow-[0_-10px_20px_rgba(0,0,0,0.02)]">
+      <div className="absolute bottom-0 left-0 right-0 h-24 bg-white/80 backdrop-blur-xl border-t border-white/20 flex justify-around items-center px-4 pb-8 pt-2 z-40">
         <TabButton icon={<Compass />} label="Discover" active={activeTab === 'discover'} onClick={() => setActiveTab('discover')} />
         <TabButton icon={<Heart />} label="Liked" active={activeTab === 'likes'} onClick={() => setActiveTab('likes')} />
         <TabButton 
@@ -83,15 +100,21 @@ function TabButton({ icon, label, active, onClick, hasBadge }: { icon: React.Rea
   return (
     <button 
       onClick={onClick}
-      className={`flex flex-col items-center justify-center w-16 gap-1 transition-colors relative ${active ? 'text-maroon-900' : 'text-neutral-400 hover:text-neutral-600'}`}
+      className={`flex flex-col items-center justify-center w-14 gap-1 transition-all duration-300 relative ${active ? 'text-maroon-900 scale-110' : 'text-neutral-400 opacity-60 hover:opacity-100'}`}
     >
-      <div className={`p-1.5 rounded-full ${active ? 'bg-maroon-50' : 'bg-transparent'}`}>
-        {React.cloneElement(icon as React.ReactElement, { className: 'w-6 h-6', strokeWidth: active ? 2.5 : 2 })}
-      </div>
+      <motion.div 
+        initial={false}
+        animate={active ? { y: -4, scale: 1.1 } : { y: 0, scale: 1 }}
+        className={`p-2 rounded-2xl flex items-center justify-center ${active ? 'bg-maroon-900 text-white shadow-lg shadow-maroon-900/20' : 'bg-transparent'}`}
+      >
+        {React.cloneElement(icon as React.ReactElement<any>, { className: 'w-5 h-5', strokeWidth: active ? 2.5 : 2 })}
+      </motion.div>
       {hasBadge && (
-        <span className="absolute top-1 right-3 w-2.5 h-2.5 bg-amber-500 border-2 border-white rounded-full shadow-sm" />
+        <span className="absolute top-0 right-2 w-2.5 h-2.5 bg-amber-500 border-2 border-white rounded-full shadow-sm" />
       )}
-      <span className="text-[10px] font-medium">{label}</span>
+      <span className={`text-[8px] font-bold uppercase tracking-tighter transition-all ${active ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-2'}`}>
+        {label}
+      </span>
     </button>
   );
 }

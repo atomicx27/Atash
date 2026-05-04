@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
 import { Flame, ArrowRight, ShieldCheck, Loader2 } from 'lucide-react';
 import { motion } from 'motion/react';
-import { db } from '../lib/firebase';
-import { doc, getDoc } from 'firebase/firestore';
+import { supabase } from '../lib/supabase';
 
 const MASTER_CODE = '21040721';
 
@@ -29,19 +28,15 @@ export function Onboarding({ onVoucherValid, onLoginClick }: OnboardingProps) {
         return;
       }
 
-      const voucherDoc = await getDoc(doc(db, 'vouchers', code));
-      if (voucherDoc.exists()) {
+      const { data, error } = await supabase.from('vouchers').select('code').eq('code', code).maybeSingle();
+      if (data) {
         await onVoucherValid(code);
       } else {
         setError('Invalid voucher code. Please check with your community reference.');
       }
     } catch (err: any) {
       console.error("Voucher check error:", err);
-      if (err.message?.includes('ADMIN_REQUIRED')) {
-        setError('Admin Action Required: Please enable Anonymous Auth in the Firebase Console as per the instructions provided.');
-      } else {
-        setError('Connection error. Please try again.');
-      }
+      setError('Connection error. Please try again.');
     } finally {
       setLoading(false);
     }

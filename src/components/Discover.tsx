@@ -1,10 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Heart, X as XIcon, MapPin, Briefcase, Compass, ChevronDown, Flame, Info, SlidersHorizontal, Loader2 } from 'lucide-react';
+import { Heart, X, MapPin, Briefcase, Compass, ChevronDown, Flame, Info, SlidersHorizontal, Loader2, Sparkles, Star } from 'lucide-react';
 import { QUESTIONS } from './Quiz';
-import { db, auth } from '../lib/firebase';
-import { collection, query, where, getDocs, setDoc, doc, serverTimestamp, limit } from 'firebase/firestore';
-import { UserProfile } from '../App';
+import { supabase } from '../lib/supabase';
+import { UserProfile } from '../components/AppContainer';
 
 interface DiscoverProps {
   currentUserAnswers?: Record<number, number>;
@@ -25,45 +24,29 @@ export function Discover({ currentUserAnswers = {}, currentUserPhoto, currentUse
   }, [filters]);
 
   const fetchProfiles = async () => {
-    if (!auth.currentUser) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
     setLoading(true);
     try {
-      // First, get all likes sent by the current user to exclude them
-      const likesSentQuery = query(
-        collection(db, 'likes'),
-        where('fromId', '==', auth.currentUser.uid)
-      );
-      const blocksSentQuery = query(
-        collection(db, 'blocks'),
-        where('blockerId', '==', auth.currentUser.uid)
-      );
-      const blocksReceivedQuery = query(
-        collection(db, 'blocks'),
-        where('blockedUserId', '==', auth.currentUser.uid)
-      );
-
-      const [likesSnapshot, blocksSentSnap, blocksRecSnap] = await Promise.all([
-        getDocs(likesSentQuery),
-        getDocs(blocksSentQuery),
-        getDocs(blocksReceivedQuery)
+      const [likesSentSnap, blocksSentSnap, blocksRecSnap] = await Promise.all([
+        supabase.from('likes').select('toId').eq('fromId', user.id),
+        supabase.from('blocks').select('blockedUserId').eq('blockerId', user.id),
+        supabase.from('blocks').select('blockerId').eq('blockedUserId', user.id)
       ]);
 
-      const likedUserIds = likesSnapshot.docs.map(doc => doc.data().toId);
+      const likedUserIds = (likesSentSnap.data || []).map(d => d.toId);
       const blockedUserIds = [
-        ...blocksSentSnap.docs.map(doc => doc.data().blockedUserId),
-        ...blocksRecSnap.docs.map(doc => doc.data().blockerId)
+        ...(blocksSentSnap.data || []).map(d => d.blockedUserId),
+        ...(blocksRecSnap.data || []).map(d => d.blockerId)
       ];
 
-      // Now query users
-      const usersQuery = query(collection(db, 'users'), limit(50));
-      const usersSnapshot = await getDocs(usersQuery);
+      const { data: usersData } = await supabase.from('users').select('*').limit(50);
       
-      const firestoreProfiles = usersSnapshot.docs
-        .map(doc => doc.data() as UserProfile)
+      const firestoreProfiles = (usersData || [])
         .filter(p => {
-          if (p.uid === auth.currentUser?.uid) return false;
-          if (likedUserIds.includes(p.uid)) return false;
-          if (blockedUserIds.includes(p.uid)) return false;
+          if (p.id === user.id) return false;
+          if (likedUserIds.includes(p.id)) return false;
+          if (blockedUserIds.includes(p.id)) return false;
           
           if (filters.gender !== 'Both') {
              const targetGender = filters.gender === 'Man' ? 'Man' : 'Woman';
@@ -76,7 +59,6 @@ export function Discover({ currentUserAnswers = {}, currentUserPhoto, currentUse
           return true;
         })
         .map(p => {
-          // Calculate compatibility simple way
           let matchCount = 0;
           const questionsCount = Object.keys(QUESTIONS).length;
           Object.keys(p.quizAnswers || {}).forEach(k => {
@@ -99,20 +81,20 @@ export function Discover({ currentUserAnswers = {}, currentUserPhoto, currentUse
 
   const handleSwipe = async (direction: 'left' | 'right') => {
     const currentProfile = cards[0];
-    if (!currentProfile || !auth.currentUser) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!currentProfile || !user) return;
 
     setLastDirection(direction);
     
     if (direction === 'right') {
       try {
-        const likeId = `${auth.currentUser.uid}_${currentProfile.uid}`;
-        await setDoc(doc(db, 'likes', likeId), {
-          fromId: auth.currentUser.uid,
-          toId: currentProfile.uid,
-          createdAt: serverTimestamp()
+        const { error: likeError } = await supabase.from('likes').upsert({
+          fromId: user.id,
+          toId: currentProfile.id || currentProfile.uid
         });
+        if (likeError) console.error("Error recording like in Discover:", likeError);
       } catch (error) {
-        console.error("Error recording like:", error);
+        console.error("Critical error in handleSwipe:", error);
       }
     }
 
@@ -120,8 +102,15 @@ export function Discover({ currentUserAnswers = {}, currentUserPhoto, currentUse
   };
 
   return (
-    <div className="h-full w-full flex flex-col relative px-4 pt-12 pb-6">
-      <div className="flex justify-between items-center mb-6 px-2">
+    <div className="relative h-full w-full bg-ivory overflow-hidden flex flex-col pt-12">
+      {/* Immersive Background Decor */}
+      <div className="absolute inset-0 z-0 opacity-40 pointer-events-none">
+        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-amber-200/30 rounded-full blur-[100px] animate-pulse" />
+        <div className="absolute bottom-[20%] right-[-10%] w-[50%] h-[50%] bg-maroon-100/30 rounded-full blur-[100px] animate-pulse" style={{ animationDelay: '2s' }} />
+      </div>
+
+      {/* Header */}
+      <div className="relative z-20 flex justify-between items-center mb-6 px-6">
         <h2 className="text-2xl text-maroon-900 serif font-bold tracking-tight">Discover</h2>
         <button 
           onClick={() => setShowFilters(true)}
@@ -131,28 +120,37 @@ export function Discover({ currentUserAnswers = {}, currentUserPhoto, currentUse
         </button>
       </div>
 
-      <div className="flex-1 relative w-full perspective-1000">
+      <div className="relative flex-1 px-4 z-10 perspective-1000 mb-20">
         <AnimatePresence>
           {loading ? (
             <div className="absolute inset-0 flex items-center justify-center">
               <Loader2 className="w-10 h-10 animate-spin text-maroon-900 opacity-20" />
             </div>
+          ) : cards.length === 0 ? (
+            <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-8">
+              <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center shadow-xl mb-6">
+                <Sparkles className="w-10 h-10 text-amber-500" />
+              </div>
+              <h3 className="text-xl font-serif font-bold text-maroon-900 mb-2">No more sparks today</h3>
+              <p className="text-neutral-500 text-sm leading-relaxed">Check back later or expand your preferences to meet more people.</p>
+            </div>
           ) : cards.map((profile, i) => {
             const isFront = i === 0;
-            if (i > 1) return null; // Only show top two cards
+            if (i > 1) return null;
 
             return (
               <motion.div
-                key={profile.uid}
-                className="absolute inset-0 w-full h-[calc(100%-80px)] rounded-[32px] overflow-hidden bg-white shadow-xl border border-neutral-100 origin-bottom"
-                initial={{ scale: 0.95, y: 20, opacity: 0 }}
+                key={profile.id || profile.uid}
+                className="absolute inset-0 w-full h-full rounded-[32px] overflow-hidden bg-white shadow-[0_20px_50px_rgba(0,0,0,0.15)] border border-white flex flex-col origin-bottom"
+                initial={{ scale: 0.9, y: 40, opacity: 0 }}
                 animate={{ 
                   scale: isFront ? 1 : 0.95, 
                   y: isFront ? 0 : 20, 
                   opacity: 1,
-                  zIndex: isFront ? 10 : 0
+                  zIndex: isFront ? 10 : 5,
+                  rotate: isFront ? 0 : (i % 2 === 0 ? 1 : -1)
                 }}
-                exit={{ x: lastDirection === 'right' ? 500 : -500, opacity: 0, rotate: lastDirection === 'right' ? 30 : -30 }}
+                exit={{ x: lastDirection === 'right' ? 600 : -600, opacity: 0, rotate: lastDirection === 'right' ? 45 : -45, transition: { duration: 0.5 } }}
                 drag={isFront ? "x" : false}
                 dragConstraints={{ left: 0, right: 0 }}
                 onDragEnd={(e, { offset }) => {
@@ -160,251 +158,248 @@ export function Discover({ currentUserAnswers = {}, currentUserPhoto, currentUse
                   else if (offset.x < -100) handleSwipe('left');
                 }}
               >
-                {/* Image background - blurred */}
-                <div className="absolute inset-0 w-full h-full">
+                {/* Compatibility Badge */}
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setComparisonProfile(profile);
+                  }}
+                  className="absolute top-6 right-6 z-30 group cursor-pointer"
+                >
+                  <div className="bg-white/80 backdrop-blur-md px-3 py-1.5 rounded-full flex items-center gap-2 shadow-xl border border-white/40">
+                    <div className="w-6 h-6 rounded-full bg-amber-500 flex items-center justify-center">
+                      <Flame className="w-3.5 h-3.5 text-white fill-white" />
+                    </div>
+                    <span className="text-maroon-900 font-bold text-sm font-serif">{profile.match}%</span>
+                  </div>
+                </motion.button>
+
+                {/* Top Section: Image */}
+                <div className="h-[60%] w-full relative shrink-0">
                   <img 
                     src={profile.photo} 
                     alt="Profile"
                     className="w-full h-full object-cover"
                   />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
+                  <div className="absolute inset-0 bg-gradient-to-t from-white via-transparent to-transparent opacity-80" />
+                  
+                  {/* Identity Overlay */}
+                  <div className="absolute bottom-6 left-6 right-6">
+                    <div className="bg-white/40 backdrop-blur-md p-4 rounded-3xl border border-white/30 shadow-sm">
+                      <h3 className="text-2xl font-serif font-bold text-maroon-900 leading-tight">
+                        {profile.name}, {profile.age}
+                      </h3>
+                      <div className="flex items-center gap-2 mt-1 text-maroon-800/70 text-[10px] font-bold uppercase tracking-widest">
+                        <MapPin className="w-3 h-3" />
+                        {profile.city}
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
-                {/* Enhanced Match Score Badge - Top Right */}
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={() => setComparisonProfile(profile)}
-                  className="absolute top-6 right-6 z-20 group cursor-pointer"
-                >
-                  <div className="bg-white/95 backdrop-blur-xl px-4 py-2 rounded-2xl flex items-center gap-2.5 shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-white/20 transition-all group-hover:border-amber-200">
-                    <div className="relative">
-                      <motion.div
-                        animate={{ scale: [1, 1.2, 1] }}
-                        transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
-                        className="absolute inset-0 bg-amber-400/20 blur-md rounded-full"
-                      />
-                      <Flame className="w-5 h-5 text-amber-600 fill-amber-600 relative z-10" />
+                {/* Info Content */}
+                <div className="flex-1 bg-white p-6 pt-2 overflow-y-auto custom-scrollbar">
+                  <div className="flex gap-4 mb-6 pb-6 border-b border-neutral-50 overflow-x-auto no-scrollbar">
+                    <div className="shrink-0 flex items-center gap-2 bg-neutral-50 px-3 py-2 rounded-2xl border border-neutral-100">
+                      <Briefcase className="w-3.5 h-3.5 text-amber-600" />
+                      <span className="text-[10px] font-bold text-neutral-600 uppercase tracking-tight">{profile.profession}</span>
                     </div>
-                    <div className="flex flex-col items-start leading-tight">
-                      <span className="text-maroon-900 font-bold text-base font-serif">
-                        {profile.match}%
-                      </span>
-                      <span className="text-[9px] text-amber-700 font-sans font-bold uppercase tracking-tighter opacity-80 group-hover:opacity-100 transition-opacity flex items-center gap-0.5">
-                        Compatibility <Info className="w-2 h-2" />
-                      </span>
-                    </div>
+                    {profile.education && (
+                      <div className="shrink-0 flex items-center gap-2 bg-neutral-50 px-3 py-2 rounded-2xl border border-neutral-100">
+                        <Star className="w-3.5 h-3.5 text-amber-600" />
+                        <span className="text-[10px] font-bold text-neutral-600 uppercase tracking-tight truncate max-w-[120px]">{profile.education}</span>
+                      </div>
+                    )}
                   </div>
-                </motion.button>
 
-                <div className="absolute inset-0 p-6 flex flex-col justify-end text-white pb-32 pointer-events-none">
-                  <h3 className="text-3xl font-serif font-bold tracking-wide mb-1">
-                    {profile.name}, {profile.age}
-                  </h3>
-                  
-                  <div className="flex items-center gap-4 text-sm opacity-90 mt-2 font-sans font-medium">
-                    <div className="flex items-center gap-1">
-                      <MapPin className="w-4 h-4" />
-                      {profile.city}
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <Briefcase className="w-4 h-4" />
-                      {profile.profession}
+                  <div className="mb-8">
+                    <h4 className="text-[9px] font-sans font-bold text-neutral-400 uppercase tracking-[0.2em] mb-3">Interests</h4>
+                    <div className="flex flex-wrap gap-2">
+                      {profile.interests?.map(interest => (
+                        <span key={interest} className="text-[10px] bg-amber-50 text-amber-800 px-3 py-1.5 rounded-xl font-bold border border-amber-100/50">
+                          {interest}
+                        </span>
+                      ))}
                     </div>
                   </div>
 
-                  <div className="flex flex-wrap gap-2 mt-4 mb-4">
-                    {profile.interests?.map(interest => (
-                      <span key={interest} className="text-[10px] bg-white/10 backdrop-blur-md px-2 py-1 rounded-full font-medium border border-white/20">
-                        {interest}
-                      </span>
-                    ))}
-                  </div>
-
-                  {/* Profile Prompts */}
                   {profile.prompts && Object.entries(profile.prompts).length > 0 && (
-                    <div className="space-y-4 mt-2">
-                       {Object.entries(profile.prompts).slice(0, 2).map(([q, a], idx) => (
-                         <div key={idx} className="bg-white/5 backdrop-blur-sm rounded-2xl p-3 border border-white/10 shadow-lg">
-                           <p className="text-[8px] font-sans font-bold text-amber-400 uppercase tracking-widest mb-1">{q}</p>
-                           <p className="text-sm font-serif italic leading-snug">"{a}"</p>
+                    <div className="space-y-6 mb-8">
+                       {Object.entries(profile.prompts).map(([q, a], idx) => (
+                         <div key={idx} className="relative">
+                           <div className="absolute -left-2 top-4 w-1 h-8 bg-amber-200 rounded-full opacity-50" />
+                           <p className="text-[9px] font-sans font-bold text-neutral-400 uppercase tracking-[0.15em] mb-2 pl-2">{q}</p>
+                           <p className="text-base font-serif italic text-maroon-950 leading-relaxed pl-2 bg-gradient-to-r from-amber-50/30 to-transparent p-3 rounded-r-2xl">
+                             "{a}"
+                           </p>
                          </div>
                        ))}
                     </div>
                   )}
-                </div>
 
+                  {profile.temple && (
+                    <div className="bg-maroon-900/5 rounded-3xl p-6 border border-maroon-900/10 flex items-center gap-4">
+                      <div className="w-12 h-12 rounded-2xl bg-white shadow-sm flex items-center justify-center text-maroon-900">
+                        <Compass className="w-6 h-6" />
+                      </div>
+                      <div>
+                        <p className="text-[9px] font-sans font-bold text-maroon-900/40 uppercase tracking-widest">Parsi Heritage</p>
+                        <p className="text-xs font-serif font-bold text-maroon-900">Atash Behram: {profile.temple}</p>
+                      </div>
+                    </div>
+                  )}
+                  
+                  <div className="h-32" />
+                </div>
               </motion.div>
             );
           })}
         </AnimatePresence>
-        
-        <AnimatePresence>
-          {comparisonProfile && (
-            <motion.div
-              initial={{ opacity: 0, y: "100%" }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: "100%" }}
-              transition={{ type: "spring", damping: 30, stiffness: 300 }}
-              className="absolute inset-0 z-50 bg-ivory rounded-[32px] overflow-hidden flex flex-col"
+
+        {/* Floating Action Buttons */}
+        {cards.length > 0 && !loading && (
+          <div className="absolute bottom-6 left-0 right-0 z-40 flex justify-center items-center gap-6 pointer-events-none">
+            <motion.button
+              whileHover={{ scale: 1.1 }}
+              whileTap={{ scale: 0.9 }}
+              onClick={() => handleSwipe('left')}
+              className="w-14 h-14 bg-white rounded-full flex items-center justify-center shadow-xl border border-neutral-100 text-neutral-400 pointer-events-auto active:bg-neutral-50 transition-colors"
             >
-              <div className="p-6 border-b border-neutral-100 flex justify-between items-center bg-white">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center">
-                    <Flame className="w-6 h-6 text-amber-600" />
-                  </div>
-                  <div>
-                    <h4 className="text-lg font-serif font-bold text-maroon-900">Compatibility</h4>
-                    <p className="text-[10px] text-neutral-400 font-sans uppercase tracking-widest">Shared Traditions</p>
-                  </div>
+              <X className="w-6 h-6" />
+            </motion.button>
+            <motion.button
+              whileHover={{ scale: 1.15, rotate: 10 }}
+              whileTap={{ scale: 0.9 }}
+              onClick={() => handleSwipe('right')}
+              className="w-18 h-18 bg-maroon-900 text-white rounded-full flex items-center justify-center shadow-2xl shadow-maroon-900/30 pointer-events-auto active:bg-maroon-800 transition-all"
+            >
+              <Flame className="w-8 h-8 fill-white" />
+            </motion.button>
+          </div>
+        )}
+      </div>
+
+      {/* Comparison Modal */}
+      <AnimatePresence>
+        {comparisonProfile && (
+          <motion.div
+            initial={{ opacity: 0, y: "100%" }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: "100%" }}
+            transition={{ type: "spring", damping: 30, stiffness: 300 }}
+            className="fixed inset-0 z-[100] bg-ivory overflow-hidden flex flex-col"
+          >
+            <div className="p-6 border-b border-neutral-100 flex justify-between items-center bg-white">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center">
+                  <Flame className="w-6 h-6 text-amber-600" />
                 </div>
-                <button 
-                  onClick={() => setComparisonProfile(null)}
-                  className="w-10 h-10 rounded-full bg-neutral-100 flex items-center justify-center text-neutral-500"
-                >
+                <div>
+                  <h4 className="text-lg font-serif font-bold text-maroon-900">Compatibility</h4>
+                  <p className="text-[10px] text-neutral-400 font-sans uppercase tracking-widest">Shared Traditions</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setComparisonProfile(null)}
+                className="w-10 h-10 rounded-full bg-neutral-100 flex items-center justify-center text-neutral-500"
+              >
+                <ChevronDown className="w-6 h-6" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6 space-y-8 pb-32">
+              <div className="flex items-center justify-center gap-6 mb-4">
+                 <div className="flex flex-col items-center gap-1">
+                    <div className="w-12 h-12 rounded-full overflow-hidden bg-neutral-200 border-2 border-white shadow-sm flex items-center justify-center text-neutral-500 font-bold">
+                      {currentUserPhoto ? <img src={currentUserPhoto} className="w-full h-full object-cover" /> : 'You'}
+                    </div>
+                    <span className="text-[8px] font-bold text-neutral-400 uppercase">You</span>
+                 </div>
+                 <div className="h-px w-12 bg-amber-100 relative">
+                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white px-2 py-0.5 rounded-full border border-amber-100 text-[8px] font-bold text-amber-600">
+                      {comparisonProfile.match}%
+                    </div>
+                 </div>
+                 <div className="flex flex-col items-center gap-1">
+                    <div className="w-12 h-12 rounded-full overflow-hidden bg-neutral-200 border-2 border-white shadow-sm flex items-center justify-center text-neutral-500 font-bold">
+                      {comparisonProfile.photo ? <img src={comparisonProfile.photo} className="w-full h-full object-cover" /> : comparisonProfile.name[0]}
+                    </div>
+                    <span className="text-[8px] font-bold text-neutral-400 uppercase">{comparisonProfile.name.split(' ')[0]}</span>
+                 </div>
+              </div>
+
+              {Object.keys(QUESTIONS).map((qId: any) => {
+                const userAns = currentUserAnswers[qId];
+                const targetAns = comparisonProfile.quizAnswers?.[qId];
+                const isMatch = userAns === targetAns;
+                
+                return (
+                  <div key={qId} className={`p-4 rounded-2xl border transition-all ${isMatch ? 'bg-amber-50/50 border-amber-100' : 'bg-white border-neutral-100 opacity-60'}`}>
+                    <div className="flex justify-between items-start mb-3">
+                      <p className="text-xs font-serif font-bold text-maroon-900 flex-1 pr-4">{QUESTIONS[qId].question}</p>
+                      {isMatch && <Sparkles className="w-4 h-4 text-amber-500 shrink-0" />}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className={`px-2 py-1 rounded-md text-[10px] font-bold ${isMatch ? 'bg-amber-200 text-amber-900' : 'bg-neutral-100 text-neutral-500'}`}>
+                        {QUESTIONS[qId].options[userAns as number]}
+                      </div>
+                      {!isMatch && (
+                        <>
+                          <div className="h-px w-2 bg-neutral-200" />
+                          <div className="px-2 py-1 rounded-md text-[10px] font-bold bg-neutral-50 text-neutral-400">
+                            {QUESTIONS[qId].options[targetAns as number]}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="p-6 bg-white border-t border-neutral-100">
+              <button 
+                onClick={() => {
+                  handleSwipe('right');
+                  setComparisonProfile(null);
+                }}
+                className="w-full bg-maroon-900 text-white font-bold py-4 rounded-2xl shadow-lg shadow-maroon-900/20 active:scale-95 transition-all"
+              >
+                Send a Spark to {comparisonProfile.name.split(' ')[0]}
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Filters Modal */}
+      <AnimatePresence>
+        {showFilters && (
+          <div className="fixed inset-0 z-[110] bg-black/40 backdrop-blur-sm flex items-end justify-center sm:p-4">
+            <motion.div 
+              initial={{ y: "100%" }}
+              animate={{ y: 0 }}
+              exit={{ y: "100%" }}
+              className="w-full sm:max-w-[400px] bg-white rounded-t-[32px] sm:rounded-[32px] p-8 shadow-2xl"
+            >
+              <div className="flex justify-between items-center mb-8">
+                <h3 className="text-2xl font-serif font-bold text-maroon-900">Preferences</h3>
+                <button onClick={() => setShowFilters(false)} className="w-10 h-10 rounded-full bg-neutral-100 flex items-center justify-center">
                   <ChevronDown className="w-6 h-6" />
                 </button>
               </div>
-
-              <div className="flex-1 overflow-y-auto p-6 space-y-8 pb-32">
-                <div className="flex items-center justify-center gap-6 mb-4">
-                   <div className="flex flex-col items-center gap-1">
-                      <div className="w-12 h-12 rounded-full overflow-hidden bg-neutral-200 border-2 border-white shadow-sm flex items-center justify-center text-neutral-500 font-bold">
-                        {currentUserPhoto ? (
-                          <img src={currentUserPhoto} alt="You" className="w-full h-full object-cover" />
-                        ) : (
-                          'You'
-                        )}
-                      </div>
-                      <span className="text-[10px] font-sans font-medium text-neutral-400">Your Answer</span>
-                   </div>
-                   <div className="h-px w-8 bg-neutral-100" />
-                   <div className="flex flex-col items-center gap-1">
-                      <div className="w-12 h-12 rounded-full bg-maroon-900 border-2 border-white shadow-sm flex items-center justify-center text-white font-bold">
-                        {comparisonProfile.name[0]}
-                      </div>
-                      <span className="text-[10px] font-sans font-medium text-neutral-400">Their Answer</span>
-                   </div>
-                </div>
-
-                <div className="bg-white rounded-3xl p-6 shadow-sm border border-neutral-100">
-                  <h4 className="text-[10px] font-bold text-neutral-400 uppercase tracking-[0.2em] mb-4">Common Interests</h4>
-                  <div className="flex flex-wrap gap-2">
-                    {comparisonProfile.interests?.map((interest: string) => (
-                      <span key={interest} className="px-3 py-1.5 bg-neutral-50 text-maroon-900 rounded-full text-[10px] font-bold border border-neutral-100 uppercase tracking-tight">
-                        {interest}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-
-                {QUESTIONS.map((q, idx) => {
-                  const yourAnswerIdx = currentUserAnswers[idx];
-                  const theirAnswerIdx = comparisonProfile.quizAnswers[idx];
-                  const isSame = yourAnswerIdx === theirAnswerIdx;
-
-                  return (
-                    <div key={idx} className="space-y-3">
-                      <p className="text-xs font-semibold text-neutral-400 uppercase tracking-wider">{q.question}</p>
-                      <div className="space-y-2">
-                        {q.options.map((opt, optIdx) => {
-                          const isYou = yourAnswerIdx === optIdx;
-                          const isThem = theirAnswerIdx === optIdx;
-                          
-                          if (!isYou && !isThem) return null; // Only show their answers if different, or just one if same
-
-                          return (
-                            <div 
-                              key={optIdx} 
-                              className={`p-4 rounded-2xl border transition-all flex items-center gap-3 ${
-                                isSame 
-                                  ? 'bg-amber-50 border-amber-200 text-amber-900' 
-                                  : isYou 
-                                    ? 'bg-white border-neutral-100 text-neutral-600'
-                                    : 'bg-maroon-50 border-maroon-100 text-maroon-900'
-                              }`}
-                            >
-                              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-bold ${
-                                isSame 
-                                ? 'bg-amber-500 text-white' 
-                                : isYou ? 'bg-neutral-200 text-neutral-600' : 'bg-maroon-900 text-white'
-                              }`}>
-                                {isSame ? 'MATCH' : isYou ? 'YOU' : comparisonProfile.name[0]}
-                              </div>
-                              <span className="text-sm font-medium">{opt}</span>
-                            </div>
-                          );
-                        })}
-                        {/* If different, we need to show both. The logic above hides non-selected ones. 
-                            Wait, the logic above works because it iterates through options and only renders the ones selected by either person. */}
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {cards.length === 0 && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center text-neutral-400">
-            <Compass className="w-16 h-16 mb-4 opacity-20" />
-            <p className="font-serif text-lg">No more profiles nearby.</p>
-          </div>
-        )}
-
-      </div>
-
-      {cards.length > 0 && !comparisonProfile && (
-        <div className="absolute bottom-6 left-0 right-0 flex justify-center gap-6 z-20">
-          <button 
-            onClick={() => handleSwipe('left')}
-            className="w-16 h-16 bg-white rounded-full flex items-center justify-center shadow-lg border border-neutral-100 text-neutral-400 hover:text-black hover:scale-105 transition-all active:scale-95"
-          >
-            <XIcon className="w-8 h-8" strokeWidth={2.5} />
-          </button>
-          <button 
-            onClick={() => handleSwipe('right')}
-            className="w-16 h-16 bg-gradient-to-tr from-maroon-900 to-amber-600 rounded-full flex items-center justify-center shadow-lg text-white hover:scale-105 transition-all active:scale-95"
-          >
-            <Heart className="w-8 h-8" strokeWidth={2.5} />
-          </button>
-        </div>
-      )}
-      {/* Filter Modal */}
-      <AnimatePresence>
-        {showFilters && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center p-6"
-          >
-            <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowFilters(false)} />
-            <motion.div 
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-white w-full max-w-md rounded-[2.5rem] p-8 relative shadow-2xl overflow-hidden"
-            >
-              <div className="flex justify-between items-center mb-6">
-                 <h3 className="text-xl serif font-bold text-maroon-900">Filters</h3>
-                 <button onClick={() => setShowFilters(false)} className="text-neutral-400 hover:text-black">
-                   <XIcon className="w-6 h-6" />
-                 </button>
-              </div>
-
+              
               <div className="space-y-8">
-                <div className="space-y-4">
-                  <label className="text-xs font-bold text-neutral-400 uppercase tracking-widest">Looking For</label>
+                <div>
+                  <label className="text-[10px] font-sans font-bold text-neutral-400 uppercase tracking-widest mb-4 block">Looking For</label>
                   <div className="grid grid-cols-3 gap-2">
                     {['Man', 'Woman', 'Both'].map(g => (
                       <button
                         key={g}
                         onClick={() => setFilters({ ...filters, gender: g })}
-                        className={`py-2.5 rounded-xl text-sm font-medium border-2 transition-all ${
-                          filters.gender === g ? 'border-amber-600 bg-amber-50 text-amber-900' : 'border-neutral-50 text-neutral-500'
-                        }`}
+                        className={`py-3 rounded-xl text-xs font-bold transition-all ${filters.gender === g ? 'bg-maroon-900 text-white shadow-lg' : 'bg-neutral-50 text-neutral-500 hover:bg-neutral-100'}`}
                       >
                         {g}
                       </button>
@@ -412,30 +407,32 @@ export function Discover({ currentUserAnswers = {}, currentUserPhoto, currentUse
                   </div>
                 </div>
 
-                <div className="space-y-4">
-                   <div className="flex justify-between items-center">
-                    <label className="text-xs font-bold text-neutral-400 uppercase tracking-widest">Age Range</label>
-                    <span className="text-sm font-bold text-maroon-900">{filters.minAge} - {filters.maxAge}</span>
-                   </div>
-                   <input 
-                    type="range" 
-                    min="18" 
-                    max="60" 
-                    value={filters.maxAge}
-                    onChange={(e) => setFilters({...filters, maxAge: parseInt(e.target.value)})}
-                    className="w-full accent-amber-600" 
-                   />
+                <div>
+                  <div className="flex justify-between items-center mb-4">
+                    <label className="text-[10px] font-sans font-bold text-neutral-400 uppercase tracking-widest">Age Range</label>
+                    <span className="text-xs font-bold text-maroon-900">{filters.minAge} - {filters.maxAge}</span>
+                  </div>
+                  <div className="px-2">
+                    <input 
+                      type="range" 
+                      min="18" 
+                      max="60" 
+                      value={filters.maxAge}
+                      onChange={(e) => setFilters({ ...filters, maxAge: parseInt(e.target.value) })}
+                      className="w-full accent-maroon-900"
+                    />
+                  </div>
                 </div>
 
                 <button 
                   onClick={() => setShowFilters(false)}
-                  className="w-full py-4 bg-maroon-900 text-white rounded-2xl font-bold shadow-lg shadow-maroon-900/20 active:scale-95 transition-all mt-4"
+                  className="w-full bg-maroon-900 text-white font-bold py-4 rounded-2xl shadow-lg shadow-maroon-900/20 active:scale-95 transition-all mt-4"
                 >
-                  Apply Filters
+                  Apply Changes
                 </button>
               </div>
             </motion.div>
-          </motion.div>
+          </div>
         )}
       </AnimatePresence>
     </div>
