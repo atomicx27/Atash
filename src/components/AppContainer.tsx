@@ -272,15 +272,19 @@ export default function AppContainer() {
   }
 
   return (
-    <div className="min-h-screen bg-neutral-900 flex items-center justify-center p-4">
-      {/* Mobile Device Frame */}
-      <div className="relative w-full max-w-[400px] h-[850px] max-h-[90vh] bg-ivory rounded-[3rem] shadow-2xl overflow-hidden ring-[14px] ring-neutral-800 flex flex-col">
-        {/* Notch simulation */}
-        <div className="absolute top-0 inset-x-0 h-6 flex justify-center z-50">
+    <div className="min-h-screen bg-neutral-900 flex items-center justify-center sm:p-4 transition-all duration-500">
+      {/* Dynamic Device Frame: Full screen on mobile, card on desktop */}
+      <div className="relative w-full sm:max-w-[400px] h-screen sm:h-[850px] sm:max-h-[90vh] bg-ivory sm:rounded-[3rem] shadow-2xl overflow-hidden sm:ring-[14px] sm:ring-neutral-800 flex flex-col transition-all duration-500">
+        
+        {/* Notch simulation - Desktop only */}
+        <div className="hidden sm:flex absolute top-0 inset-x-0 h-6 justify-center z-50 pointer-events-none">
           <div className="w-1/3 h-5 bg-neutral-800 rounded-b-2xl"></div>
         </div>
 
-        <div className="flex-1 overflow-y-auto relative h-full w-full bg-ivory pb-8">
+        {/* Dynamic Notch/Header space for mobile */}
+        <div className="sm:hidden h-8 bg-white shrink-0" />
+
+        <div className="flex-1 overflow-y-auto relative h-full w-full bg-ivory">
           {currentScreen === 'onboarding' && (
             <Onboarding onVoucherValid={handleVoucherSubmit} onLoginClick={handleLoginClick} />
           )}
