@@ -14,7 +14,7 @@ const PROMPT_OPTIONS = [
 ];
 
 import { supabase } from '../lib/supabase';
-import { UserProfile } from '../App';
+import { UserProfile } from './AppContainer';
 import { QUESTIONS } from './Quiz';
 
 interface ProfileSettingsProps {
