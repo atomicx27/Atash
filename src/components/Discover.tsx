@@ -177,21 +177,21 @@ export function Discover({ currentUserAnswers = {}, currentUserPhoto, currentUse
                 </motion.button>
 
                 {/* Top Section: Image */}
-                <div className="h-[60%] w-full relative shrink-0">
+                <div className="h-[75%] w-full relative shrink-0">
                   <img 
                     src={profile.photo} 
                     alt="Profile"
-                    className="w-full h-full object-cover"
+                    className="w-full h-full object-cover object-center"
                   />
-                  <div className="absolute inset-0 bg-gradient-to-t from-white via-transparent to-transparent opacity-80" />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent" />
                   
-                  {/* Identity Overlay */}
-                  <div className="absolute bottom-6 left-6 right-6">
-                    <div className="bg-white/40 backdrop-blur-md p-4 rounded-3xl border border-white/30 shadow-sm">
-                      <h3 className="text-2xl font-serif font-bold text-maroon-900 leading-tight">
+                  {/* Identity Overlay - Integrated into the image area */}
+                  <div className="absolute bottom-4 left-4 right-4">
+                    <div className="bg-white/10 backdrop-blur-lg p-4 rounded-3xl border border-white/20 shadow-2xl">
+                      <h3 className="text-2xl font-serif font-bold text-white leading-tight drop-shadow-sm">
                         {profile.name}, {profile.age}
                       </h3>
-                      <div className="flex items-center gap-2 mt-1 text-maroon-800/70 text-[10px] font-bold uppercase tracking-widest">
+                      <div className="flex items-center gap-2 mt-1 text-white/80 text-[10px] font-bold uppercase tracking-widest">
                         <MapPin className="w-3 h-3" />
                         {profile.city}
                       </div>
@@ -199,8 +199,8 @@ export function Discover({ currentUserAnswers = {}, currentUserPhoto, currentUse
                   </div>
                 </div>
 
-                {/* Info Content */}
-                <div className="flex-1 bg-white p-6 pt-2 overflow-y-auto custom-scrollbar">
+                {/* Bottom Section: Scrollable Info */}
+                <div className="flex-1 bg-white p-6 pt-6 overflow-y-auto custom-scrollbar">
                   <div className="flex gap-4 mb-6 pb-6 border-b border-neutral-50 overflow-x-auto no-scrollbar">
                     <div className="shrink-0 flex items-center gap-2 bg-neutral-50 px-3 py-2 rounded-2xl border border-neutral-100">
                       <Briefcase className="w-3.5 h-3.5 text-amber-600" />
